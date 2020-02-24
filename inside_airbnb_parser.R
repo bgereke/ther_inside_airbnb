@@ -1,15 +1,17 @@
 library(tidyverse)
 library(RCurl)
+library(DBI)
+library(data.table)
 
 scrape_inside_airbnb <- function(){
   main_url <- getURL("http://insideairbnb.com/get-the-data.html")
   detailed_listings_urls <- regmatches(main_url, gregexpr('http[^"]*listings.csv.gz', main_url))[[1]]
   tmpSplit <- strsplit(detailed_listings_urls,"/")
   table <- tibble(
-                  "country" = map_chr(tmpSplit,4),
-                  "state" = map_chr(tmpSplit,5),
-                  "city" = map_chr(tmpSplit,6),
-                  "date" = map_chr(tmpSplit,7),
+                  "url_country" = map_chr(tmpSplit,4),
+                  "url_state" = map_chr(tmpSplit,5),
+                  "url_city" = map_chr(tmpSplit,6),
+                  "url_date" = map_chr(tmpSplit,7),
                   "detailed_listings_url" = detailed_listings_urls,
                   "summary_listings_url" = regmatches(main_url, gregexpr('http[^"]*visualisations/listings.csv', main_url))[[1]],
                   "calendar_url" = regmatches(main_url, gregexpr('http[^"]*calendar.csv.gz', main_url))[[1]],
@@ -18,19 +20,48 @@ scrape_inside_airbnb <- function(){
                   "neighborhood_url" = regmatches(main_url, gregexpr('http[^"]*neighbourhoods.csv', main_url))[[1]],
                   "neighborhood_geo_url" = regmatches(main_url, gregexpr('http[^"]*neighbourhoods.geojson', main_url))[[1]]
                   )
-  table$date <- as.Date(table$date)
+  table$url_date <- as.Date(table$url_date)
   return(table)
 }
 
-
-
-write_tables(url_list){
-  #read tables from the given url extensions and write them to disk   
+url_to_pgdb <- function(con, table_name, url, add_indices = NULL){
+  table <- fread(as.character(url), encoding = 'UTF-8')
+  if (!is.null(add_indices)){
+    table[,names(add_indices)] <- add_indices[names(add_indices)]
+  }
+  if (!dbExistsTable(con, table_name)){
+    dbWriteTable(con, table_name, table)
+  } else {
+    if(dbExistsTable(con, "tmp_table")){
+      dbRemoveTable(con, "tmp_table")
+    }
+    dbWriteTable(con, "tmp_table", table)
+    #this is unsafe, should use dbBind() or sqlInterpolate() but they were failing
+    query <- paste0("INSERT INTO ", table_name, " SELECT * FROM tmp_table EXCEPT SELECT * FROM ", table_name)
+    dbExecute(con, query)
+    dbRemoveTable(con, "tmp_table")
+  }
 }
 
-file_url <- scrape_inside_airbnb()
+update_pgdb <- function(con, table_names){
+  file_urls <- scrape_inside_airbnb()
+  url_cols <- grep("_url", names(file_urls))
+  # url_col_names <- gsub("_url", "", names(file_urls))[url_cols]
+  indices <- file_urls[-url_cols]
+  for (i in 1:length(table_names)){
+    for (j in 1:nrow(file_urls)){
+      try(
+        url_to_pgdb(con, 
+                    table_name = table_names[[i]],
+                    url = file_urls[j, paste0(table_names[[i]],"_url")],
+                    add_indices = file_urls[j, -url_cols])
+        )
+    } 
+  }
+}
 
-library(data.table)
+
+file_url <- scrape_inside_airbnb()
 data <- fread("http://data.insideairbnb.com/united-states/or/portland/2019-10-16/data/listings.csv.gz")
 
 calendar <- read.csv("C:/Users/Brian/Downloads/calendar/calendar.csv")
