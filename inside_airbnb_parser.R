@@ -25,47 +25,71 @@ scrape_inside_airbnb <- function(){
 }
 
 url_to_pgdb <- function(con, table_name, url, add_indices = NULL){
-  table <- fread(as.character(url), encoding = 'UTF-8')
-  if (!is.null(add_indices)){
-    table[,names(add_indices)] <- add_indices[names(add_indices)]
-  }
-  if (!dbExistsTable(con, table_name)){
-    dbWriteTable(con, table_name, table)
-  } else {
-    if(dbExistsTable(con, "tmp_table")){
-      dbRemoveTable(con, "tmp_table")
-    }
-    dbWriteTable(con, "tmp_table", table)
-    #this is unsafe, should use dbBind() or sqlInterpolate() but they were failing
-    query <- paste0("INSERT INTO ", table_name, " SELECT * FROM tmp_table EXCEPT SELECT * FROM ", table_name)
-    dbExecute(con, query)
-    dbRemoveTable(con, "tmp_table")
-  }
+  copy_table <- paste0("COPY ", table_name, 
+                  " FROM PROGRAM 'curl \"", 
+                  url,
+                  "\" | gzip -dac' HEADER CSV DELIMITER ','"
+                  )
+  dbExecute(con, copy_table)
+  # table <- fread(as.character(url), encoding = 'UTF-8')
+  # if (!is.null(add_indices)){
+  #   table[,names(add_indices)] <- add_indices[names(add_indices)]
+  # }
+  # if (!dbExistsTable(con, table_name)){
+  #   dbCreateTable(con, table_name, table)
+  #   dbAppendTable(con, table_name, table)
+  # } else {
+  #   dbAppendTable(con, table_name, table)
+  #   # dbWriteTable(con, "tmp_table", table)
+  #   # #this is unsafe, should use dbBind() or sqlInterpolate() but they were failing
+  #   # query <- paste0("INSERT INTO ", table_name, " SELECT * FROM tmp_table EXCEPT SELECT * FROM ", table_name)
+  #   # dbExecute(con, query)
+  #   # dbRemoveTable(con, "tmp_table")
+  # }
 }
 
-update_pgdb <- function(con, table_names){
+build_pgdb <- function(con, table_names){
   file_urls <- scrape_inside_airbnb()
   url_cols <- grep("_url", names(file_urls))
-  # url_col_names <- gsub("_url", "", names(file_urls))[url_cols]
   indices <- file_urls[-url_cols]
   for (i in 1:length(table_names)){
+    drop_table <- paste0("DROP TABLE IF EXISTS ", table_names[[i]]) 
+    dbExecute(con, drop_table)
+    create_table <- paste0("CREATE TABLE ", 
+                           table_names[[i]], 
+                           " (
+                           listing_id INT, 
+                           date DATE, 
+                           available BOOLEAN, 
+                           price TEXT, 
+                           adjusted_price TEXT, 
+                           minimum_nights INT, 
+                           maximum_nights INT)"
+                           )
+    dbExecute(con, create_table)
     for (j in 1:nrow(file_urls)){
       try(
         url_to_pgdb(con, 
                     table_name = table_names[[i]],
                     url = file_urls[j, paste0(table_names[[i]],"_url")],
-                    add_indices = file_urls[j, -url_cols])
+                    add_indices = NULL) #indices[j,])
         )
+      print(paste0("copied ", j, " of ", nrow(file_urls)))
     } 
   }
 }
 
 
-file_url <- scrape_inside_airbnb()
-data <- fread("http://data.insideairbnb.com/united-states/or/portland/2019-10-16/data/listings.csv.gz")
+library(DBI)
+con <- DBI::dbConnect(odbc::odbc(), Driver = "PostgreSQL ODBC Driver(ANSI)", 
+                      Server = "localhost", Database = "inside_airbnb", UID = rstudioapi::askForPassword("Database user"), 
+                      PWD = rstudioapi::askForPassword("Database password"), Port = 5432)
+file_urls <- scrape_inside_airbnb()
 
+
+
+data <- fread("http://data.insideairbnb.com/the-netherlands/north-holland/amsterdam/2019-12-07/data/calendar.csv.gz")
 calendar <- read.csv("C:/Users/Brian/Downloads/calendar/calendar.csv")
-
 spark_read_jdbc(sc,
                 name = "actor_jdbc",
                 options = list(url = "jdbc:postgresql://localhost:5432/dvdrental", 
