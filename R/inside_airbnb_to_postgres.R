@@ -17,8 +17,8 @@ scrape_inside_airbnb <- function(){
                   "calendar_url" = regmatches(main_url, gregexpr('http[^"]*calendar.csv.gz', main_url))[[1]],
                   "detailed_review_url" = regmatches(main_url, gregexpr('http[^"]*reviews.csv.gz', main_url))[[1]],
                   "summary_review_url" = regmatches(main_url, gregexpr('http[^"]*visualisations/reviews.csv', main_url))[[1]],
-                  "neighborhood_url" = regmatches(main_url, gregexpr('http[^"]*neighbourhoods.csv', main_url))[[1]],
-                  "neighborhood_geo_url" = regmatches(main_url, gregexpr('http[^"]*neighbourhoods.geojson', main_url))[[1]]
+                  "neighbourhood_url" = regmatches(main_url, gregexpr('http[^"]*neighbourhoods.csv', main_url))[[1]],
+                  "neighbourhood_geo_url" = regmatches(main_url, gregexpr('http[^"]*neighbourhoods.geojson', main_url))[[1]]
                   )
   table$url_date <- as.Date(table$url_date)
   return(table)
@@ -33,8 +33,8 @@ create_table <- function(con, table_name){
       table_name, 
       " (
       listing_id INT, 
-      date DATE, 
-      available BOOLEAN, 
+      date TEXT, 
+      available TEXT, 
       price MONEY, 
       adjusted_price MONEY, 
       minimum_nights INT, 
@@ -48,7 +48,7 @@ create_table <- function(con, table_name){
       id INT, 
       listing_url TEXT, 
       scrape_id BIGINT, 
-      last_scraped DATE,
+      last_scraped TEXT,
       name TEXT,
       summary TEXT,
       space TEXT,
@@ -67,27 +67,27 @@ create_table <- function(con, table_name){
       host_id INT,
       host_url TEXT,
       host_name TEXT,
-      host_since DATE,
+      host_since TEXT,
       host_location TEXT,
       host_about TEXT,
       host_response_time TEXT,
       host_response_rate VARCHAR(4),
       host_acceptance_rate VARCHAR(4),
-      host_is_superhost BOOLEAN,
+      host_is_superhost TEXT,
       host_thumbnail_url TEXT,
       host_picture_url TEXT,
       host_neighbourhood TEXT,
-      host_listings_count SMALLINT,
-      host_total_listings_count SMALLINT,
+      host_listings_count INT,
+      host_total_listings_count INT,
       host_verifications TEXT,
-      host_has_profile_pic BOOLEAN,
-      host_identity_verified BOOLEAN,
+      host_has_profile_pic TEXT,
+      host_identity_verified TEXT,
       street TEXT,
       neighbourhood TEXT,
       neighbourhood_cleansed TEXT,
-      neighbourhood_group_cleansed BOOLEAN,
+      neighbourhood_group_cleansed TEXT,
       city TEXT,
-      state TExt,
+      state TEXT,
       zipcode TEXT,
       market TEXT,
       smart_location TEXT,
@@ -95,25 +95,25 @@ create_table <- function(con, table_name){
       country TEXT,
       latitute NUMERIC,
       longitude NUMERIC,
-      is_location_exact BOOLEAN,
+      is_location_exact TEXT,
       property_type TEXT,
       room_type TEXT,
-      accomodates SMALLINT,
-      bathrooms SMALLINT,
-      bedrooms SMALLINT,
-      beds SMALLINT,
+      accomodates NUMERIC,
+      bathrooms NUMERIC,
+      bedrooms NUMERIC,
+      beds NUMERIC,
       bed_type TEXT,
       amenities TEXT,
-      square_feet SMALLINT,
+      square_feet INT,
       price MONEY,
       weekly_price MONEY,
       monthly_price MONEY,
       security_deposit MONEY,
       cleaning_fee MONEY,
-      guests_included SMALLINT,
+      guests_included INT,
       extra_people MONEY,
-      minimum_nights SMALLINT,
-      maximum_nights SMALLINT,
+      minimum_nights INT,
+      maximum_nights INT,
       minimum_minimum_nights INT,
       maximum_minimum_nights INT,
       minimum_maximum_nights INT,
@@ -121,35 +121,35 @@ create_table <- function(con, table_name){
       minimum_nights_avg_ntm NUMERIC,
       maximum_nights_avg_ntm NUMERIC,
       calendar_updated TEXT,
-      has_availability BOOLEAN,
-      availability_30 SMALLINT,
-      availability_60 SMALLINT,
-      availability_90 SMALLINT,
-      availability_365 SMALLINT,
+      has_availability TEXT,
+      availability_30 INT,
+      availability_60 INT,
+      availability_90 INT,
+      availability_365 INT,
       calendar_last_scraped TEXT,
       number_of_reviews INT,
       number_of_reviews_ltm INT,
-      first_review DATE,
-      last_review DATE,
-      review_scores_ratings SMALLINT,
-      review_scores_accuracy SMALLINT,
-      review_scores_cleanliness SMALLINT,
-      review_scores_checkin SMALLINT,
-      review_scores_communication SMALLINT,
-      review_scores_location SMALLINT,
-      review_scores_value SMALLINT,
-      requires_license BOOLEAN,
+      first_review TEXT,
+      last_review TEXT,
+      review_scores_ratings INT,
+      review_scores_accuracy INT,
+      review_scores_cleanliness INT,
+      review_scores_checkin INT,
+      review_scores_communication INT,
+      review_scores_location INT,
+      review_scores_value INT,
+      requires_license TEXT,
       license TEXT,
       jurisdiction_names TEXT,
-      instant_bookable BOOLEAN,
-      is_business_travel_ready BOOLEAN,
+      instant_bookable TEXT,
+      is_business_travel_ready TEXT,
       cancellation_policy TEXT,
-      require_guest_profile_picture BOOLEAN,
-      require_guest_phone_verification BOOLEAN,
-      calculated_host_listings SMALLINT,
-      calculated_host_listings_count_entire_home SMALLINT,
-      calculated_host_listings_count_private_rooms SMALLINT,
-      calculated_host_listings_count_shared_rooms SMALLINT,
+      require_guest_profile_picture TEXT,
+      require_guest_phone_verification TEXT,
+      calculated_host_listings INT,
+      calculated_host_listings_count_entire_home INT,
+      calculated_host_listings_count_private_rooms INT,
+      calculated_host_listings_count_shared_rooms INT,
       reviews_per_month NUMERIC)
       "
     )
@@ -168,12 +168,12 @@ create_table <- function(con, table_name){
       longitude NUMERIC,
       room_type TEXT,
       price INT,
-      minimum_nights SMALLINT,
+      minimum_nights INT,
       number_of_reviews INT,
-      last_review DATE,
+      last_review TEXT,
       reviews_per_month NUMERIC,
       calculated_host_listings_count INT,
-      availability_365 SMALLINT)"
+      availability_365 INT)"
     )
   } else if (table_name == "detailed_review"){
     create_table <- paste0(
@@ -182,7 +182,7 @@ create_table <- function(con, table_name){
       " (
       listing_id INT, 
       id INT, 
-      date DATE, 
+      date TEXT, 
       reviewer_id INT, 
       reviewer_name TEXT, 
       comments TEXT)"
@@ -193,9 +193,9 @@ create_table <- function(con, table_name){
       table_name, 
       " (
       listing_id INT, 
-      date DATE)"
+      date TEXT)"
     )
-  } else if (table_name == "neighborhoods"){
+  } else if (table_name == "neighbourhood"){
     create_table <- paste0(
       "CREATE TABLE ", 
       table_name, 
@@ -203,14 +203,14 @@ create_table <- function(con, table_name){
       neighborhood_group TEXT,
       neighborhood TEXT)"
     )
-  } else if (table_name == "neighborhood_geo"){
+  } else if (table_name == "neighbourhood_geo"){
     create_table <- paste0(
       "CREATE TABLE ", 
       table_name, 
       " (
       listing_id INT, 
-      date DATE, 
-      available BOOLEAN, 
+      date TEXT, 
+      available TEXT, 
       price TEXT, 
       adjusted_price TEXT, 
       minimum_nights INT, 
@@ -223,11 +223,19 @@ create_table <- function(con, table_name){
 
 url_to_pgdb <- function(con, city, table_name, url_df){
   url <- url_df[url_df$url_city == city, paste0(table_name, "_url")]
-  copy_table <- paste0("COPY ", table_name, 
-                  " FROM PROGRAM 'curl \"", 
-                  url,
-                  "\" | gzip -dac' HEADER CSV DELIMITER ','"
-                  )
+  if (grepl(".gz", url)){
+    copy_table <- paste0("COPY ", table_name, 
+                         " FROM PROGRAM 'curl \"", 
+                         url,
+                         "\" | gzip -dac' HEADER CSV DELIMITER ','"
+    )
+  } else {
+    copy_table <- paste0("COPY ", table_name, 
+                         " FROM PROGRAM 'curl \"", 
+                         url,
+                         "\"' HEADER CSV DELIMITER ','"
+    )
+  }
   num_rows_affected <- dbExecute(con, copy_table)
   return(num_rows_affected)
 }
@@ -241,6 +249,7 @@ build_pgdb <- function(con, cities, table_names){
     filter(url_date == max(url_date))
   url_cols <- grep("_url", names(file_urls))
   indices <- file_urls[-url_cols]
+  dbExecute(con, "SET CLIENT_ENCODING TO 'utf8'")
   tables_created <- 
     map(table_names, create_table, con = con)
   num_rows_affected <- 
@@ -256,10 +265,10 @@ con <- DBI::dbConnect(odbc::odbc(), Driver = "PostgreSQL ODBC Driver(ANSI)",
                       Server = "localhost", Database = "inside_airbnb", UID = rstudioapi::askForPassword("Database user"), 
                       PWD = rstudioapi::askForPassword("Database password"), Port = 5432)
 file_urls <- scrape_inside_airbnb()
+cities <- list("portland", "san-francisco")
+table_names <- list("summary_listings", "calendar", "detailed_review", "detailed_listings", "summary_review", "neighbourhood")
+build_pgdb(con, cities = cities, table_names = table_names)
 
-
-
-data <- fread("http://data.insideairbnb.com/the-netherlands/north-holland/amsterdam/2019-12-07/data/listings.csv.gz")
 calendar <- read.csv("C:/Users/Brian/Downloads/calendar/calendar.csv")
 spark_read_jdbc(sc,
                 name = "actor_jdbc",
