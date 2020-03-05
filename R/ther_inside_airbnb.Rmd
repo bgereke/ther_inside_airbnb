@@ -1,0 +1,145 @@
+---
+title: "The R Inside Airbnb"
+output: html_notebook
+---
+
+Inside Airbnb is an anti-airbnb activist website that hosts airbnb listing availability data for many cities worldwide. The data is scraped from the airbnb website every few days or so, and represents listing information that was live at the time of the scrape. The goal of this notebook will be to explore a subset of the data and answer two primary questions: First, what factors drive host pricing decisions? Second, what factors drive customer booking decisions?  
+
+## Accessing the data
+
+To access the data, I began by scraping the data file URLs from the Inside Airbnb website, and used those endpoints to construct a PostgreSQL database from the hosted csv files. Let's source that library now: 
+
+```{r}
+source("inside_airbnb_to_postgres.R")
+```
+
+Using this library, all of the csv file URLs can be organinzed into a table by calling:
+
+```{r}
+file_urls <- scrape_inside_airbnb()
+head(file_urls)
+```
+
+The full dataset consists of 7 table types, each with `r nrow(file_urls)` files. Let's see what the most scraped countries, states and cities are.
+
+```{r}
+scrapes_by_country <- file_urls %>% 
+  group_by(url_country) %>% 
+  summarize(num_scrapes = n()) %>% 
+  arrange(desc(num_scrapes)) %>% collect
+
+options(repr.plot.height = 600)
+ggplot(data = scrapes_by_country, aes(x = reorder(url_country, -num_scrapes), y = num_scrapes)) + 
+  geom_bar(stat = "identity") +
+  xlab('country') + ylab('# scrapes') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) 
+
+scrapes_by_state <- file_urls %>% 
+  filter(url_country == "united-states") %>%
+  group_by(url_state) %>% 
+  summarize(num_scrapes = n()) %>% 
+  arrange(desc(num_scrapes)) %>% collect
+
+options(repr.plot.height = 600)
+ggplot(data = scrapes_by_state, aes(x = reorder(url_state, -num_scrapes), y = num_scrapes)) + 
+  geom_bar(stat = "identity") +
+  xlab('state') + ylab('# scrapes') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+scrapes_by_city <- file_urls %>% 
+  filter(url_country == "united-states" & url_state == "ca" | url_state == "or") %>%
+  group_by(url_city, url_state) %>% 
+  summarize(num_scrapes = n()) %>% 
+  arrange(desc(num_scrapes)) %>% collect
+
+options(repr.plot.height = 600)
+ggplot(data = scrapes_by_city, aes(x = reorder(url_city, -num_scrapes), y = num_scrapes, fill = url_state)) + 
+  geom_bar(stat = "identity") +
+  xlab('city') + ylab('# scrapes') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) 
+
+```
+
+## Building a database
+
+As we can see, San Francisco and Portland are two of the most scraped cities in the dataset. From here on, we'll restrict the analysis to these two cities. Let's go ahead and connect to the PostgreSQL database:
+
+```{r}
+library(DBI)
+con <- DBI::dbConnect(odbc::odbc(), Driver = "PostgreSQL ODBC Driver(ANSI)", 
+    Server = "localhost", Database = "inside_airbnb", UID = rstudioapi::askForPassword("Database user"), 
+    PWD = rstudioapi::askForPassword("Database password"), Port = 5432)
+tmp <- dbExecute(con, "SET CLIENT_ENCODING TO 'utf8'")
+```
+
+We can populate the database with any list of cities and table types by running the code chunk below; however, downloading and converting the files takes some time, so this was done ahead of time.
+
+```{r}
+cities <- list("san-francisco", "portland")
+table_names <- list("summary_listings", "calendar", "detailed_review", "detailed_listings", "summary_review", "neighbourhood")
+# num_rows_affected <- build_pgdb(con, cities = cities, table_names = table_names)
+```
+
+The two main tables of interest are "calendar" which contains the listing prices and availabilities for the upcoming year, and "detailed_listings" which contains some features for each listing (e.g., host, location, property details, etc.). Let's run some simple queries to see how many listings we have for each city:
+
+```{sql, connection = con, output.var="num_listings"}
+SELECT smart_location, COUNT(DISTINCT id)
+FROM detailed_listings
+GROUP BY smart_location;
+```
+```{r}
+num_listings
+```
+```{r}
+sql_count_cols <- "SELECT COUNT(*) FROM information_schema.columns 
+                  WHERE table_name = 'detailed_listings'"
+num_features <- as.integer(dbGetQuery(con, sql_count_cols)$count)
+sql_count_records <- "SELECT COUNT(*) FROM calendar"
+num_records <- as.integer(dbGetQuery(con, sql_count_records)$count)
+```
+
+Uh oh... it appears the cities weren't coded very well. Overall, "detailed_listings" has `r num_features` features, and many of them either aren't coded very well, or contain redundant or irrelevant information for our purposes. Also, the data is pretty big... the "calendar" table has `r num_records` records across all listings and dates. We're going to need to do some data cleansing and filtering to obtain something more reasonable to work with.  
+
+## Cleaning and preprocessing
+Let's go ahead and read in "detailed listings" and decided which features are worth keeping.
+```{r}
+detailed_listings <- dbReadTable(con, "detailed_listings")
+head(detailed_listings)
+```
+A number of columns are mostly missing data (i.e., NA's), have only one distinct value, or are URL's. We can drop those, and some other features we may not care about such as the scrape id, etc. We'll drop all but one of the city features and recode the remaining feature. We also recode all features with mosly t's ad f's to boolean. Many of the features are long text descriptions. While we could apply some NLP or sentiment analysis to these entries to construct new features, we'll keep things simple and convert these to numeric values corresponding to the length of the entry. This should greatly reduce the size of the data but also throws away a good deal of information. We can always return to beef up the feature count here. Also, some of the URL's link to important data such as pictures of the rental units. We'll ignore those for now as well, but may return to them in the future. 
+
+```{r}
+source("data_cleaning_utils.R")
+
+detailed_listings <- detailed_listings %>%
+  drop_junk %>%
+  factorize_booleans %>%
+  factorize_city(city_names = c("Portland","San Francisco"), state_names = c("OR","CA")) %>%
+  factorize_amenities %>%
+  factorize_host_verifications %>%
+  factorize_license %>%
+  factorize_simple_cols %>%
+  factorize_cancellation_policy %>%
+  convert_dates %>%
+  host_rates_to_numeric %>%
+  text_to_numeric
+  
+head(detailed_listings)
+```
+
+## Exploratory Data Analysis
+
+Now that we have a database, let's go ahead and run a query that joins the calendar and detailed listings tables by the listing id, and read in the result:
+
+```{sql, connection = con, output.var=""}
+query <- "
+  SELECT * from calendar AS c 
+  INNER JOIN detailed_listings AS d 
+  ON c.listing_id = d.id
+  WHERE city = 'San Francisco'"
+  
+full_table <- dbGetQuery(con, query)
+```
+## Predicting Advertised Price
+
+## Predicting Occupancy

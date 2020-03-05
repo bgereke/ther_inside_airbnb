@@ -1,7 +1,7 @@
-library(tidyverse)
-library(RCurl)
-library(DBI)
-library(data.table)
+suppressMessages(library(RCurl, quietly = TRUE, warn.conflicts = FALSE))
+suppressMessages(library(DBI, quietly = TRUE, warn.conflicts = FALSE))
+suppressMessages(library(tidyverse, quietly = TRUE, warn.conflicts = FALSE))
+# library(data.table)
 
 scrape_inside_airbnb <- function(){
   main_url <- getURL("http://insideairbnb.com/get-the-data.html")
@@ -249,7 +249,6 @@ build_pgdb <- function(con, cities, table_names){
     filter(url_date == max(url_date))
   url_cols <- grep("_url", names(file_urls))
   indices <- file_urls[-url_cols]
-  dbExecute(con, "SET CLIENT_ENCODING TO 'utf8'")
   tables_created <- 
     map(table_names, create_table, con = con)
   num_rows_affected <- 
@@ -259,20 +258,14 @@ build_pgdb <- function(con, cities, table_names){
   return(num_rows_affected)
 }
 
-
-library(DBI)
-con <- DBI::dbConnect(odbc::odbc(), Driver = "PostgreSQL ODBC Driver(ANSI)", 
-                      Server = "localhost", Database = "inside_airbnb", UID = rstudioapi::askForPassword("Database user"), 
-                      PWD = rstudioapi::askForPassword("Database password"), Port = 5432)
-file_urls <- scrape_inside_airbnb()
-cities <- list("portland", "san-francisco")
-table_names <- list("summary_listings", "calendar", "detailed_review", "detailed_listings", "summary_review", "neighbourhood")
-build_pgdb(con, cities = cities, table_names = table_names)
-
-calendar <- read.csv("C:/Users/Brian/Downloads/calendar/calendar.csv")
-spark_read_jdbc(sc,
-                name = "actor_jdbc",
-                options = list(url = "jdbc:postgresql://localhost:5432/dvdrental", 
-                                             user = rstudioapi::askForPassword("Database user"), 
-                                             password = rstudioapi::askForPassword("Database password"), 
-                                             dbtable = "actor"))
+# cols_to_clean <- list()
+# new_view_name <- "clean_listings"
+# clean_pgdb(con, table_name = table_to_clean, view_name = new_view_name, cols = cols_to_clean)
+# 
+# calendar <- read.csv("C:/Users/Brian/Downloads/calendar/calendar.csv")
+# spark_read_jdbc(sc,
+#                 name = "actor_jdbc",
+#                 options = list(url = "jdbc:postgresql://localhost:5432/dvdrental", 
+#                                              user = rstudioapi::askForPassword("Database user"), 
+#                                              password = rstudioapi::askForPassword("Database password"), 
+#                                              dbtable = "actor"))
