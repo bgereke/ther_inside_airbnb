@@ -122,24 +122,27 @@ detailed_listings <- detailed_listings %>%
   factorize_cancellation_policy %>%
   convert_dates %>%
   host_rates_to_numeric %>%
-  text_to_numeric
+  text_to_numeric %>%
+  process_missing
   
 head(detailed_listings)
 ```
 
 ## Exploratory Data Analysis
 
-Now that we have a database, let's go ahead and run a query that joins the calendar and detailed listings tables by the listing id, and read in the result:
+```{r}
+library(DataExplorer)
+missing_prof <- profile_missing(detailed_listings)
 
-```{sql, connection = con, output.var=""}
-query <- "
-  SELECT * from calendar AS c 
-  INNER JOIN detailed_listings AS d 
-  ON c.listing_id = d.id
-  WHERE city = 'San Francisco'"
-  
-full_table <- dbGetQuery(con, query)
+options(repr.plot.height = 600)
+ggplot(data = missing_prof[missing_prof$num_missing > 0,], aes(x = feature, y = pct_missing)) + 
+  geom_bar(stat = "identity") +
+  xlab('feature') + ylab('proportion missing') +
+  ggtitle('features with missing data') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) 
 ```
+
+
 ## Predicting Advertised Price
 
 ## Predicting Occupancy

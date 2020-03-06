@@ -7,7 +7,7 @@ drop_junk <- function(df, cols = junk_cols){
     colnames(df)[grep("_url", colnames(df))],
     cols
   )
-  df <- df %>% select(-c(cols_to_drop))
+  df <- df %>% select(-cols_to_drop)
   return(df)
 }
 
@@ -106,17 +106,57 @@ text_to_numeric <- function(df, cols = text_cols){
   return(df)
 }
 
+process_missing <- function(df, proportion_to_drop = 0.05){
+  #delete rows if feature has small number of missing values
+  prop_missing <- colSums(is.na(df)) / nrow(df)
+  low_na_cols <- names(df)[prop_missing < proportion_to_drop]
+  df <- df[complete.cases(df[, low_na_cols]),]
+  high_na_cols <- names(df)[prop_missing >= proportion_to_drop]
+  for (c in 1:length(high_na_cols)){
+    if (high_na_cols[c] %in% c("security_deposit", "cleaning_fee")){
+      df[is.na(df[, high_na_cols[c]]), high_na_cols[c]] <- 0
+    } else if (high_na_cols[c] %in% c("host_response_rate", "host_acceptance_rate")){
+      df[!is.na(df[, high_na_cols[c]]), high_na_cols[c]] <- cut(df[!is.na(df[, high_na_cols[c]]), high_na_cols[c]], 
+                                                                breaks = c(0, 50, 90, 99, 100))
+      df[is.na(df[, high_na_cols[c]]), high_na_cols[c]] <- "empty" 
+      df[, high_na_cols[c]] <- factor(df[, high_na_cols[c]], 
+                                      levels = as.character(unique(df[, high_na_cols[c]])))
+    } else if(high_na_cols[c] %in% c("first_review", "last_review")){
+      first_review <- min(df[, high_na_cols[c]], na.rm = TRUE)
+      last_review <- max(df[, high_na_cols[c]], na.rm = TRUE)
+      df[!is.na(df[, high_na_cols[c]]), high_na_cols[c]] <- cut(df[!is.na(df[, high_na_cols[c]]), high_na_cols[c]], 
+                                                                breaks = seq(first_review, last_review, length.out = 5))
+      df[, high_na_cols[c]] <- as.character(df[, high_na_cols[c]])
+      df[is.na( df[, high_na_cols[c]]), high_na_cols[c]] <- "empty"
+      df[, high_na_cols[c]] <- factor(df[, high_na_cols[c]], 
+                                      levels = unique(df[, high_na_cols[c]]))
+    } else if(grepl("review_scores_",high_na_cols[c])){
+      df[!is.na(df[, high_na_cols[c]]), high_na_cols[c]] <- cut(df[!is.na(df[, high_na_cols[c]]), high_na_cols[c]], 
+                                                                breaks = c(8, 9, 10))
+      df[is.na(df[, high_na_cols[c]]), high_na_cols[c]] <- "empty" 
+      df[, high_na_cols[c]] <- factor(df[, high_na_cols[c]], 
+                                      levels = as.character(unique(df[, high_na_cols[c]])))
+    }
+  }
+  return(df)
+}
+
 
 #default variables
-junk_cols <- c('scrape_id', 'host_id','host_name', 'host_listings_count', 'calendar_last_scraped','calendar_updated', 'neighbourhood_group_cleansed', 'country_code')
+junk_cols <- c('scrape_id', 'host_id',
+               'host_name', 'host_neighbourhood', 
+               'host_listings_count', 'calendar_last_scraped',
+               'calendar_updated', 'neighbourhood_group_cleansed', 
+               'country_code', 'reviews_per_month',
+               'number_of_reviews_ltm')
 pop_cols <- c('latitute', 'longitude', 'zipcode')
 rate_list <- c("host_response_rate", "host_acceptance_rate")
 text_cols <- c("name", "summary", "space", "description", "neighbourhood_overview", "notes", "transit", "access", "interaction", "house_rules", "host_about")
 date_format <- "%Y-%m-%d"
 bool_chars <- c("t", "f")
-simple_factor_list <- c("host_response_time", "host_neighbourhood", "property_type", "room_type", "bed_type")
+simple_factor_list <- c("host_response_time", "property_type", "room_type", "bed_type")
 city_keep <- "smart_location"
-city_drop <- c('street', 'neighbourhood', 'city', 'market', 'jurisdiction_names')
+city_drop <- c('street', 'neighbourhood', 'city', 'market', 'jurisdiction_names', 'state')
 verifications_list = c('email', 'phone', 'reviews', 'jumio', 'government_id','kba', 'work_email','facebook','identity_manual','offline_government_id','selfie','google')
 amenities_list = c(
   '24-hour check-in',
@@ -317,7 +357,5 @@ amenities_list = c(
   'Wifi',
   'Window guards',
   'Wine cooler',
-  'toilet',
-  'translation missing: en.hosting_amenity_49',
-  'translation missing: en.hosting_amenity_50'
+  'toilet'
 )
