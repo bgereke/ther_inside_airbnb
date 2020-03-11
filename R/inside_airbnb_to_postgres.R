@@ -3,11 +3,28 @@ suppressMessages(library(DBI, quietly = TRUE, warn.conflicts = FALSE))
 suppressMessages(library(tidyverse, quietly = TRUE, warn.conflicts = FALSE))
 # library(data.table)
 
+#' Scrape the data URLs from insideairbnb.com
+#'
+#' @return A data frame with 11 variables:
+#' \describe{
+#'   \item{url_country}{country for the URL's}
+#'   \item{url_state}{state or province for the URL's}
+#'   \item{url_city}{state or province for the URL's}
+#'   \item{url_date}{date the data was scraped from Airbnb}
+#'   \item{detailed_listings_url}{URL to listings.csv.gz}
+#'   \item{summary_listings_url}{URL to listings.csv}
+#'   \item{calendar_url}{URL to calendar.csv.gz}
+#'   \item{detailed_review_url}{URL to reviews.csv.gz}
+#'   \item{summary_review_url}{URL to reviews.csv}
+#'   \item{neighbourhood_url}{URL to neighbourhoods.csv}
+#'   \item{neighbourhood_geo_url}{URL to neighourhoods.geojson}
+#' }
+#' @source \url{http://insideairbnb.com/get-the-data.html}
 scrape_inside_airbnb <- function(){
   main_url <- getURL("http://insideairbnb.com/get-the-data.html")
   detailed_listings_urls <- regmatches(main_url, gregexpr('http[^"]*listings.csv.gz', main_url))[[1]]
   tmpSplit <- strsplit(detailed_listings_urls,"/")
-  table <- tibble(
+  table <- data.frame(
                   "url_country" = map_chr(tmpSplit,4),
                   "url_state" = map_chr(tmpSplit,5),
                   "url_city" = map_chr(tmpSplit,6),
@@ -24,6 +41,24 @@ scrape_inside_airbnb <- function(){
   return(table)
 }
 
+#' Create an empty SQL table for one of the valid table types
+#'
+#' @param con A database connection object
+#' @param table_name Charactor specifying the table to be created. Can be
+#' 'calendar', 'detailed_listings', 'summary_listings', detailed_review',
+#' 'summary_review', neighbourhood', or 'neighbourhood_geo'.
+#'
+#' @return TRUE upon completion
+#' 
+#' @examples 
+#' library(DBI)
+#' con <- DBI::dbConnect(odbc::odbc(), Driver = "PostgreSQL ODBC Driver(ANSI)", 
+#'                       Server = "localhost", Database = "inside_airbnb", 
+#'                       UID = rstudioapi::askForPassword("Database user"), 
+#'                       PWD = rstudioapi::askForPassword("Database password"), 
+#'                       Port = 5432)
+#' tmp <- dbExecute(con, "SET CLIENT_ENCODING TO 'utf8'")
+#' create_table(con, table_name = 'calendar')
 create_table <- function(con, table_name){
   drop_table <- paste0("DROP TABLE IF EXISTS ", table_name) 
   dbExecute(con, drop_table)
@@ -221,6 +256,32 @@ create_table <- function(con, table_name){
   return(TRUE)
 }
 
+#' Load data from a URL to a PostrgreSQL database.
+#' 
+#' Loads the most recently scraped URL corresponding to the supplied
+#' cities and tables.
+#'
+#' @param con A database connection object
+#' @param city Character specifying a city name. Must be a city hosted by
+#' insideairbnb.
+#' @param table_name Charactor specifying the table to be created. Can be
+#' 'calendar', 'detailed_listings', 'summary_listings', detailed_review',
+#' 'summary_review', neighbourhood', or 'neighbourhood_geo'. 
+#' @param url_df A data frame as returned by \code{\link{scrape_inside_airbnb}}
+#'
+#' @return Number of rows affected by corresponding SQL query.
+#'
+#' @examples
+#' library(DBI)
+#' con <- DBI::dbConnect(odbc::odbc(), Driver = "PostgreSQL ODBC Driver(ANSI)", 
+#'                       Server = "localhost", Database = "inside_airbnb", 
+#'                       UID = rstudioapi::askForPassword("Database user"), 
+#'                       PWD = rstudioapi::askForPassword("Database password"), 
+#'                       Port = 5432)
+#' tmp <- dbExecute(con, "SET CLIENT_ENCODING TO 'utf8'")
+#' url_table <- scrape_inside_airbnb()
+#' create_table(con, table_name = 'calendar')
+#' url_to_pgb(con, city = 'San Francisco', table_name = 'calendar', url_df = url_table)
 url_to_pgdb <- function(con, city, table_name, url_df){
   url <- url_df[url_df$url_city == city, paste0(table_name, "_url")]
   if (grepl(".gz", url)){
@@ -240,6 +301,30 @@ url_to_pgdb <- function(con, city, table_name, url_df){
   return(num_rows_affected)
 }
 
+#' Build a PostgreSQL database from the tables hosted by insideairbnb.
+#'
+#' @param con A database connection object.
+#' @param cities A list of cities to take tables from. All cities must
+#' be hosted by insideairbnb. 
+#' @param table_names A list of tables to be built. Can be 'calendar', 
+#' 'detailed_listings', 'summary_listings', detailed_review',
+#' 'summary_review', neighbourhood', or 'neighbourhood_geo'. 
+#'
+#' @return A list of the number of rows affected by the SQL query for
+#' each URL.
+#'
+#' @examples
+#' library(DBI)
+#' con <- DBI::dbConnect(odbc::odbc(), Driver = "PostgreSQL ODBC Driver(ANSI)", 
+#'                       Server = "localhost", Database = "inside_airbnb", 
+#'                       UID = rstudioapi::askForPassword("Database user"), 
+#'                       PWD = rstudioapi::askForPassword("Database password"), 
+#'                       Port = 5432)
+#' tmp <- dbExecute(con, "SET CLIENT_ENCODING TO 'utf8'")
+#' url_table <- scrape_inside_airbnb()
+#' tables <- c('calendar', 'detailed_listings')
+#' city_names <- c('San Francisco', 'Portland')
+#' build_pgb(con, cities = city_names, table_names = tables)
 build_pgdb <- function(con, cities, table_names){
   file_urls <-
     scrape_inside_airbnb() %>%
