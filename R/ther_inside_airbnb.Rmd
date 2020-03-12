@@ -1,6 +1,8 @@
 ---
 title: "The R Inside Airbnb"
-output: html_notebook
+output:
+  html_notebook: default
+  pdf_document: default
 ---
 
 Inside Airbnb is an anti-airbnb activist website that hosts airbnb listing availability data for many cities worldwide. The data is scraped from the airbnb website every few days or so, and represents listing information that was live at the time of the scrape. The goal of this notebook will be to explore a subset of the data and answer two primary questions: First, what factors drive host pricing decisions? Second, what factors drive customer booking decisions?  
@@ -180,23 +182,28 @@ library(DataExplorer)
 plot_histogram(full_df)
 plot_correlation(full_df, cor_args = list("method" = "spearman"))
 
-num_listings <- 10
+num_listings <- 5
 sample_df <- full_df %>%
   filter(listing_id %in% sample(unique(listing_id), num_listings, replace = FALSE)) %>%
-  group_by(listing_id) %>%
-  mutate(price = price / median(price))
+  group_by(listing_id) #%>%
+  # mutate(price = price / median(price))
 options(repr.plot.height = 600)
 ggplot(data = sample_df, aes(x = date, y = price, group = listing_id, color = listing_id)) + 
   geom_line(size = 1) +
   xlab('date') + ylab('price (normalized)')
 ```
-From these visualizations, we can tell that price dynamics vary substantially from listing to listing and many appear non-stationary. Predictions will be better if we can identify groups of similarly behaving listings and model them separately. Let's reduce dimensionality with umap and cluster the resulting embedding with dbscan: 
+From these visualizations, we can tell that price dynamics vary substantially from listing to listing and many appear non-stationary. Predictions will be better if we can identify groups of similarly behaving listings and model them separately. We'll try clustering the time series' power spectra:
 ```{r}
+library(multitaper)
+library(umap)
+library(Rtsne)
+library(dbscan)
 library(dtwclust)
 
 calendars <- full_df %>%
   group_by(listing_id) %>%
-  mutate(price = price / median(price)) %>%
+  # mutate(price = price - min(price)) %>%
+  # mutate(price = price / max(price) - 0.5) %>%
   ungroup %>%
   pivot_wider(id_cols = listing_id, 
               values_from = price, 
@@ -204,23 +211,31 @@ calendars <- full_df %>%
               values_fill = list(price = 0)) 
 calendars <- calendars[complete.cases(calendars),]
 calendars <- calendars[,colSums(is.na(calendars)) == 0]
+calendars <- calendars[,2:366]
+calendars <- as.data.frame(t(as.matrix(calendars)))
 
-clust <- tsclust(as.matrix(calendars[,-1]), 
+specs <- map(calendars, ts) %>%
+  map(spec.mtm, plot = FALSE, nw = 10) %>%
+  map(purrr::pluck, "spec")
+
+specs <- t(matrix(replace_na(unlist(specs),0), ncol = ncol(calendars)))
+# specs <- apply(t(specs), 2, function(x) x - min(x))
+# specs <- t(apply(specs, 2, function(x) x / max(x)))
+specs <- apply(specs, 2, function(x) x / sum(x))
+  
+
+umapped <- umap(specs)
+comps <- prcomp(specs, scale = TRUE, center = TRUE)
+clusts <- dbscan(comps$x[,1:3], eps = 2)
+
+tsne <- Rtsne(specs, check_duplicates = FALSE)
+
+clust <- tsclust(specs, 
                  type = "tadpole",
-                 k = 10,
-                 control = tadpole_control(dc = 1.5, window.size = 18))
+                 k = 7,
+                 control = tadpole_control(dc = 1.5, window.size = 10))
 
-data_plot <- data.table(melt(umapped))
-data_plot[, Clust := rep(res_clust$cluster, ncol(umapped))]
- 
-data_centroid <- data.table(melt(res_clust$centers))
-data_centroid[, Clust := Var1]
-
-ggplot(data_plot) +
-  facet_wrap(~Clust, scales = "free", ncol = 3) +
-  geom_line(aes(Var2, value, group = Var1), alpha = 0.7) +
-  geom_line(data = data_centroid, aes(Var2, value, group = Var1),
-            alpha = 0.8, color = "red", size = 1.2) 
+clust <- tsclust(specs, k = 6, distance = "L2", centroid = "pam")
   
 dbclust <- as.matrix(umapped$x[,1:3]) %>%
   dbscan(eps = 1) 
@@ -232,13 +247,8 @@ ggplot(data = umap_df, aes(x = umap1, y = umap2, group = clust, color = clust)) 
 
 rgl.open()# Open a new RGL device
 rgl.bg(color = "white") # Setup the background color
-rgl.points(umapped$x[,1], umapped$x[,2], umapped$x[,3], color = get_colors(dbclust$cluster), size = 5)
+rgl.points(comps$x[,1], comps$x[,2], comps$x[,3], color = 'black', size = 5)
 ```
-This looks pretty decent. Let's plot the time series from the different groups to verify that they appear similar.
-```{r}
-
-```
-
 
 ## Predicting Advertised Price
 Our goal will now be to predict listing price across the calendar year using features chosen based on the above eda. 
@@ -246,96 +256,230 @@ Our goal will now be to predict listing price across the calendar year using fea
 library(xgboost)
 library(glmnet)
 library(mlr)
+library(Ckmeans.1d.dp)
 
-test_frac <- 0.15
-test_listings <- c()
-for (city in levels(full_df$smart_location)){
-  city_listings <- unique(full_df$listing_id[full_df$smart_location == city])
-  num_city_listings <- length(city_listings)
-  test_listings <- c(test_listings,
-                     sample(city_listings,
-                            floor(test_frac*num_city_listings),
-                            replace = FALSE))
-}
-
+#select features and target 
 features <- c("available","minimum_nights",
               "maximum_nights","accomodates",
               "cleaning_fee","extra_people",
               "number_of_reviews","bathrooms",
               "security_deposit","calculated_host_listings",
               "smart_location", "weekday", 
-              "is_holiday", "num_date",
-              "available")
+              "is_holiday", "num_date")
 full_df$log_price <- (full_df$price + 1)
 
-# xgtrain <- xgb.DMatrix(data = makeX(full_df[!(as.integer(full_df$listing_id) %in% test_listings),][,features], 
-#                                     sparse = TRUE),
-#                       label = full_df$log_price[!(as.integer(full_df$listing_id) %in% test_listings)])
-# 
-# xgtest <- xgb.DMatrix(data = makeX(full_df[as.integer(full_df$listing_id) %in% test_listings,][,features], 
-#                                    sparse = TRUE),
-#                       label = full_df$log_price[as.integer(full_df$listing_id) %in% test_listings])
+#breakup training and test sets
+test_frac <- 0.15
+train_listings <- c()
+for (city in levels(full_df$smart_location)){
+  city_listings <- unique(full_df$listing_id[full_df$smart_location == city])
+  num_city_listings <- length(city_listings)
+  train_listings <- c(train_listings,
+                     sample(city_listings,
+                            floor(test_frac*num_city_listings),
+                            replace = FALSE))
+}
 
-# cvparams <- list(booster = "gbtree", 
-#                objective = "reg:squarederror", 
-#                eta=0.3, 
-#                gamma=0, 
-#                max_depth=10, 
-#                min_child_weight=1, 
-#                subsample=1, 
-#                colsample_bytree=1)
-# 
-# xgbcv <- xgb.cv(params = cvparams, 
-#                 data = xgtrain, 
-#                 nrounds = 200, 
-#                 nfold = 5, 
-#                 showsd = T, 
-#                 stratified = T, 
-#                 print_every_n = 10, 
-#                 early_stopping_rounds = 20, 
-#                 maximize = F)
+#prepare training and test sets for xgboost
+train_idx <- as.integer(full_df$listing_id) %in% train_listings
+test_idx <- !(as.integer(full_df$listing_id) %in% train_listings)
+xgtrain <- xgb.DMatrix(data = makeX(full_df[train_idx, features],
+                                    sparse = TRUE),
+                       label = full_df$log_price[train_idx])
 
-train_task <- makeRegrTask(id = "1", 
-                           data = full_df[!(as.integer(full_df$listing_id) %in% test_listings),][,c(features,'log_price')], 
-                           target = "log_price")
-test_task <- makeRegrTask(id = "2", 
-                          data = full_df[as.integer(full_df$listing_id) %in% test_listings,][,c(features,'log_price')], 
-                          target = "log_price")
-train_task <- createDummyFeatures (obj = train_task)
-test_task <- createDummyFeatures (obj = test_task)
-xglearner <- makeLearner("regr.xgboost",
-                         predict.type = "response")
-xglearner$par.vals <- list(objective="reg:squarederror", 
-                           eval_metric="error", 
-                           nrounds=300L, 
-                           eta=0.3)
-tune_params <- makeParamSet(makeDiscreteParam("booster", values = c("gbtree","gblinear")), 
-                       makeIntegerParam("max_depth",lower = 5L, upper = 15L), 
-                       makeNumericParam("min_child_weight",lower = 1L,upper = 10L), 
-                       makeNumericParam("subsample",lower = 0.5,upper = 1), 
-                       makeNumericParam("colsample_bytree",lower = 0.5,upper = 1))
-rdesc <- makeResampleDesc("CV", iters = 5L)
-ctrl <- makeTuneControlRandom(maxit = 10L)
-xgtune <- tuneParams(learner = xglearner, 
-                     task = train_task, 
-                     resampling = rdesc, 
-                     par.set = tune_params, 
-                     control = ctrl, 
-                     show.info = T)
-best_tune <- setHyperPars(xglearner, par.vals = xgtune$x)
-xgmodel <- train(learner = best_tune, task = train_task)
-xgpred <- predict(xgmodel, test_task)
+xgtest <- xgb.DMatrix(data = makeX(full_df[test_idx, features],
+                                   sparse = TRUE),
+                      label = full_df$log_price[test_idx])
 
-# xgmod <- xgboost(data = xgtrain_data, 
-#                  label = xgtrain_lab,
-#                  params = params,
-#                  nrounds = xgbcv$best_iteration)
-# 
-# xgpred <- predict(xgmod, xgtest_data)
-r_squared <- 1 - sum((xgtest_lab - xgpred)^2) / sum((xgtest_lab - mean(xgtest_lab))^2)
+#xgboost cross validation parameters
+cvparams <- list(booster = "gbtree",
+                 objective = "reg:squarederror",
+                 eta=0.3,
+                 gamma=0,
+                 max_depth=10)
 
-importanceRaw <- xgb.importance(feature_names = colnames(xgtrain_data), model = xgmod)
-xgb.plot.importance(importance_matrix = importanceRaw)
+#k-fold cross-validated xgboost
+#take folds by sampling listings as above
+num_folds <- 5
+folds <- vector("list", num_folds)
+for (fold in 1:num_folds){
+  fold_indices <- c()
+  for (city in levels(full_df$smart_location)){
+    city_listings <- unique(full_df$listing_id[full_df$smart_location[train_idx] == city])
+    num_city_listings <- length(city_listings)
+    sample_listings <-   sample(city_listings,
+                         floor(test_frac*num_city_listings),
+                         replace = FALSE)
+    fold_indices <- c(fold_indices, which(full_df$listing_id[train_idx] %in% sample_listings))
+  }
+  folds[[fold]] <- fold_indices
+}
+
+xgbcv <- xgb.cv(params = cvparams,
+                data = xgtrain,
+                nrounds = 300,
+                folds = folds,
+                showsd = T,
+                print_every_n = 10,
+                early_stopping_rounds = 20,
+                maximize = F)
+
+xgmod <- xgb.train(data = xgtrain,
+                  params = cvparams,
+                  nrounds = xgbcv$best_iteration,
+                  print_every_n = 10,
+                  watchlist = list(val= xgtest,train = xgtrain))
+
+xgpred <- predict(xgmod, xgtest)
+
+# hyper paramater tuning (Not Run)
+#
+# train_task <- makeRegrTask(id = "1", 
+#                            data = full_df[!(as.integer(full_df$listing_id) %in% test_listings),][,c(features,'log_price')], 
+#                            target = "log_price")
+# test_task <- makeRegrTask(id = "2", 
+#                           data = full_df[as.integer(full_df$listing_id) %in% test_listings,][,c(features,'log_price')], 
+#                           target = "log_price")
+# train_task <- createDummyFeatures (obj = train_task)
+# test_task <- createDummyFeatures (obj = test_task)
+# xglearner <- makeLearner("regr.xgboost",
+#                          predict.type = "response")
+# xglearner$par.vals <- list(objective="reg:squarederror", 
+#                            eval_metric="error", 
+#                            nrounds=300L, 
+#                            eta=0.3)
+# tune_params <- makeParamSet(makeDiscreteParam("booster", values = c("gbtree","gblinear")), 
+#                        makeIntegerParam("max_depth",lower = 5L, upper = 15L), 
+#                        makeNumericParam("min_child_weight",lower = 1L,upper = 10L), 
+#                        makeNumericParam("subsample",lower = 0.5,upper = 1), 
+#                        makeNumericParam("colsample_bytree",lower = 0.5,upper = 1))
+# rdesc <- makeResampleDesc("CV", iters = 5L)
+# ctrl <- makeTuneControlRandom(maxit = 10L)
+# xgtune <- tuneParams(learner = xglearner, 
+#                      task = train_task, 
+#                      resampling = rdesc, 
+#                      par.set = tune_params, 
+#                      control = ctrl, 
+#                      show.info = T)
+# best_tune <- setHyperPars(xglearner, par.vals = xgtune$x)
+# xgmodel <- train(learner = best_tune, task = train_task)
+# xgpred <- predict(xgmodel, test_task)
+
+r_squared <- 1 - sum((full_df$log_price[test_idx] - xgpred)^2) / sum((full_df$log_price[test_idx] - mean(full_df$log_price[test_idx]))^2)
+
+importance <- xgb.importance(feature_names = colnames(xgtrain), model = xgmod)
+xgb.ggplot.importance(importance_matrix = importance)
+xgb.plot.shap(data = makeX(full_df[test_idx, features], sparse = TRUE), 
+              model = xgmod, 
+              top_n = 12, 
+              n_col = 3, 
+              plot_loess = TRUE)
 ```
+The model has an out-of-sample R^2^ of `r r_squared`. Not terrible.
 
 ## Predicting Occupancy
+We'll now repeat a similar analysis predicting listing availability over the calendar year.
+```{r}
+library(xgboost)
+library(glmnet)
+library(mlr)
+library(Ckmeans.1d.dp)
+library(caret)
+library(pROC)
+
+#select features and target 
+features <- c("price","minimum_nights",
+              "maximum_nights","accomodates",
+              "cleaning_fee","extra_people",
+              "number_of_reviews","bathrooms",
+              "security_deposit","calculated_host_listings",
+              "smart_location", "weekday", 
+              "is_holiday", "num_date")
+
+#breakup training and test sets
+test_frac <- 0.15
+train_listings <- c()
+for (city in levels(full_df$smart_location)){
+  city_listings <- unique(full_df$listing_id[full_df$smart_location == city])
+  num_city_listings <- length(city_listings)
+  train_listings <- c(train_listings,
+                     sample(city_listings,
+                            floor(test_frac*num_city_listings),
+                            replace = FALSE))
+}
+
+#prepare training and test sets for xgboost
+train_idx <- as.integer(full_df$listing_id) %in% train_listings
+test_idx <- !(as.integer(full_df$listing_id) %in% train_listings)
+xgtrain <- xgb.DMatrix(data = makeX(full_df[train_idx, features],
+                                    sparse = TRUE),
+                       label = as.numeric(full_df$available[train_idx] == 't'))
+
+xgtest <- xgb.DMatrix(data = makeX(full_df[test_idx, features],
+                                   sparse = TRUE),
+                      label = as.numeric(full_df$available[test_idx] == 't'))
+
+#xgboost cross validation parameters
+cvparams <- list(booster = "gbtree",
+                 objective = "binary:logistic",
+                 eta=0.3,
+                 gamma=0,
+                 max_depth=10)
+
+#k-fold cross-validated xgboost
+#take folds by sampling listings as above
+num_folds <- 5
+folds <- vector("list", num_folds)
+for (fold in 1:num_folds){
+  fold_indices <- c()
+  for (city in levels(full_df$smart_location)){
+    city_listings <- unique(full_df$listing_id[full_df$smart_location[train_idx] == city])
+    num_city_listings <- length(city_listings)
+    sample_listings <-   sample(city_listings,
+                         floor(test_frac*num_city_listings),
+                         replace = FALSE)
+    fold_indices <- c(fold_indices, which(full_df$listing_id[train_idx] %in% sample_listings))
+  }
+  folds[[fold]] <- fold_indices
+}
+
+xgbcv <- xgb.cv(params = cvparams,
+                data = xgtrain,
+                nrounds = 300,
+                folds = folds,
+                showsd = T,
+                print_every_n = 10,
+                verbose = 0,
+                early_stopping_rounds = 20,
+                maximize = F)
+
+xgmod <- xgb.train(data = xgtrain,
+                  params = cvparams,
+                  nrounds = xgbcv$best_iteration,
+                  print_every_n = 10,
+                  verbose = 0,
+                  watchlist = list(val= xgtest,train = xgtrain))
+
+truth <- as.numeric(full_df$available[test_idx] == 't')
+#roc plot
+roc(truth, predict(xgmod, xgtest),
+    smoothed = FALSE,
+    ci=TRUE, ci.alpha=0.9, 
+    plot=TRUE, auc.polygon=TRUE, max.auc.polygon=TRUE, #grid=TRUE,
+    print.auc=TRUE, show.thres=TRUE)
+
+#confusion plot
+xgpred <- ifelse (predict(xgmod, xgtest) > 0.5,1,0)
+conf_mat <- confusionMatrix(as.factor(xgpred), as.factor(truth))
+fourfoldplot(conf_mat$table, color = c("#CC6666", "#99CC99"),
+             conf.level = 0, margin = 1, main = "Confusion Matrix")
+
+importance <- xgb.importance(feature_names = colnames(xgtrain), model = xgmod)
+xgb.ggplot.importance(importance_matrix = importance)
+xgb.plot.shap(data = makeX(full_df[test_idx, features], sparse = TRUE), 
+              model = xgmod, 
+              top_n = 12, 
+              n_col = 3, 
+              plot_loess = TRUE)
+```
+
