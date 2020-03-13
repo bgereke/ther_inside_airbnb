@@ -138,21 +138,23 @@ head(detailed_listings)
 Let's do some simple eda to verify the cleaning steps, and get a sense how the variables are distribtued and correlated.
 
 ```{r}
-library(DataExplorer)
-plot_intro(detailed_listings)
-plot_bar(detailed_listings)
-plot_histogram(detailed_listings)
-plot_correlation(detailed_listings, type = 'continuous', cor_args = list("method" = "spearman"))
-plot_correlation(detailed_listings, type = 'discrete', cor_args = list("method" = "spearman"))
-# numeric_cols <- sapply(detailed_listings, function(x) is.numeric(x))
-# plot_prcomp(detailed_listings[,numeric_cols], variance_cap = 0.5, maxcat = 10L)
-# plot_qq(detailed_listings)
-plot_scatterplot(detailed_listings, by = "price")
+suppressMessages(library(DataExplorer))
+suppressWarnings({
+  plot_intro(detailed_listings)
+  plot_bar(detailed_listings)
+  plot_histogram(detailed_listings)
+  plot_correlation(detailed_listings, type = 'continuous', cor_args = list("method" = "spearman"))
+  plot_correlation(detailed_listings, type = 'discrete', cor_args = list("method" = "spearman"))
+  # numeric_cols <- sapply(detailed_listings, function(x) is.numeric(x))
+  # plot_prcomp(detailed_listings[,numeric_cols], variance_cap = 0.5, maxcat = 10L)
+  # plot_qq(detailed_listings)
+  plot_scatterplot(detailed_listings, by = "price")
+})
  
 ```
 Now let's read in the calendar table and performing an inner join with some of the cleaned detailed listings features from above that we might want to include:
 ```{r}
-library("timeDate")
+suppressMessages(library("timeDate"))
 
 calendar <- dbReadTable(con, "calendar")
 calendar$date <- as.Date(calendar$date)
@@ -178,9 +180,11 @@ head(full_df)
 ```
 Now we can do a slightly more detailed eda.
 ```{r}
-library(DataExplorer)
-plot_histogram(full_df)
-plot_correlation(full_df, cor_args = list("method" = "spearman"))
+suppressMessages(library(DataExplorer))
+suppressWarnings({
+  plot_histogram(full_df)
+  plot_correlation(full_df, cor_args = list("method" = "spearman"))
+})
 
 num_listings <- 5
 sample_df <- full_df %>%
@@ -190,20 +194,21 @@ sample_df <- full_df %>%
 options(repr.plot.height = 600)
 ggplot(data = sample_df, aes(x = date, y = price, group = listing_id, color = listing_id)) + 
   geom_line(size = 1) +
-  xlab('date') + ylab('price (normalized)')
+  xlab('date') + ylab('price (dollars or normalized)')
 ```
 From these visualizations, we can tell that price dynamics vary substantially from listing to listing and many appear non-stationary. Predictions will be better if we can identify groups of similarly behaving listings and model them separately. We'll try clustering the time series' power spectra:
 ```{r}
-library(multitaper)
-library(umap)
-library(Rtsne)
-library(dbscan)
-library(dtwclust)
+suppressMessages({
+  library(umap)
+  library(dtwclust)
+})
+  
 
+#get complete calendars
 calendars <- full_df %>%
   group_by(listing_id) %>%
-  # mutate(price = price - min(price)) %>%
-  # mutate(price = price / max(price) - 0.5) %>%
+  mutate(price = log(price + 1)) %>%
+  mutate(price = price - mean(price)) %>%
   ungroup %>%
   pivot_wider(id_cols = listing_id, 
               values_from = price, 
@@ -211,52 +216,63 @@ calendars <- full_df %>%
               values_fill = list(price = 0)) 
 calendars <- calendars[complete.cases(calendars),]
 calendars <- calendars[,colSums(is.na(calendars)) == 0]
-calendars <- calendars[,2:366]
-calendars <- as.data.frame(t(as.matrix(calendars)))
+calendars <- as.matrix(calendars[,2:366])
+calendars <- calendars[rowSums(calendars == 0) < ncol(calendars),]
 
-specs <- map(calendars, ts) %>%
-  map(spec.mtm, plot = FALSE, nw = 10) %>%
+#get multitapered power spectra
+calendars_df <- as.data.frame(t(calendars))
+specs <- map(calendars_df, ts) %>%
+  map(spectrum, plot = FALSE, span = 10) %>%
   map(purrr::pluck, "spec")
+freqs <- map(calendars_df, ts) %>%
+  map(spectrum, plot = FALSE, span = 10) %>%
+  map(purrr::pluck, "freq")
+specs <- log(t(matrix(replace_na(unlist(specs),0), ncol = ncol(calendars_df))))
+# specs <- apply(specs, 2, function(x) x / sum(x))
 
-specs <- t(matrix(replace_na(unlist(specs),0), ncol = ncol(calendars)))
-# specs <- apply(t(specs), 2, function(x) x - min(x))
-# specs <- t(apply(specs, 2, function(x) x / max(x)))
-specs <- apply(specs, 2, function(x) x / sum(x))
-  
-
-umapped <- umap(specs)
-comps <- prcomp(specs, scale = TRUE, center = TRUE)
-clusts <- dbscan(comps$x[,1:3], eps = 2)
-
-tsne <- Rtsne(specs, check_duplicates = FALSE)
-
-clust <- tsclust(specs, 
+#clustering via time series clustering approach (pam w/ dtw distance)
+spec_clust <- tsclust(specs, 
                  type = "tadpole",
-                 k = 7,
-                 control = tadpole_control(dc = 1.5, window.size = 10))
+                 k = 6,
+                 control = tadpole_control(dc = 0.1, window.size = 10))
+cal_clust <- tsclust(calendars, 
+                 type = "tadpole",
+                 k = 6,
+                 control = tadpole_control(dc = 0.1, window.size = 4))
+plot(spec_clust, type = 'sc', linetype = 'solid')
+plot(cal_clust, type = 'sc', linetype = 'solid')
 
-clust <- tsclust(specs, k = 6, distance = "L2", centroid = "pam")
-  
-dbclust <- as.matrix(umapped$x[,1:3]) %>%
-  dbscan(eps = 1) 
-umap_df <- data.frame('umap1' = umapped$x[,1],
-                      'umap2' = umapped$x[,2],
-                      'clust' = factor(dbclust$cluster))
-ggplot(data = umap_df, aes(x = umap1, y = umap2, group = clust, color = clust)) + 
-  geom_point()
+#dimensionality reduction (pca or umap)
+# comps <- prcomp(specs, scale = TRUE, center = TRUE)
+umapped_specs <- umap(specs)
+umapped_cals <- umap(calendars)
+umap_df <- data.frame('umap_dimension_1' = c(umapped_specs$layout[,1], 
+                                             umapped_cals$layout[,1]),
+                      'umap_dimension_2' = c(umapped_specs$layout[,2], 
+                                             umapped_cals$layout[,2]),
+                      'clust' = factor(c(spec_clust@cluster, 
+                                         cal_clust@cluster)),
+                      'type' = factor(rep(c("spectra","time_series"), each = nrow(specs))))
+colors <- c("#FFDB6D", "#C4961A", "#D16103", "#C3D7A4", "#52854C", "#293352", "#F4EDCA", "#4E84C4")
+plt <- ggplot(data = umap_df, aes(x = umap_dimension_1, y = umap_dimension_2, group = clust, color = clust)) + 
+  geom_point(size = 1.5) +
+  scale_colour_manual(values = colors) + 
+  facet_grid(.~type) +
+  coord_fixed() +  
+  xlim(-25, 25) + ylim(-25, 25)
+suppressWarnings(print(plt))
 
-rgl.open()# Open a new RGL device
-rgl.bg(color = "white") # Setup the background color
-rgl.points(comps$x[,1], comps$x[,2], comps$x[,3], color = 'black', size = 5)
 ```
 
 ## Predicting Advertised Price
 Our goal will now be to predict listing price across the calendar year using features chosen based on the above eda. 
 ```{r}
-library(xgboost)
-library(glmnet)
-library(mlr)
-library(Ckmeans.1d.dp)
+suppressMessages({
+  library(xgboost)
+  library(glmnet)
+  library(mlr)
+  library(Ckmeans.1d.dp)
+})
 
 #select features and target 
 features <- c("available","minimum_nights",
@@ -321,6 +337,7 @@ xgbcv <- xgb.cv(params = cvparams,
                 folds = folds,
                 showsd = T,
                 print_every_n = 10,
+                verbose = FALSE,
                 early_stopping_rounds = 20,
                 maximize = F)
 
@@ -328,6 +345,7 @@ xgmod <- xgb.train(data = xgtrain,
                   params = cvparams,
                   nrounds = xgbcv$best_iteration,
                   print_every_n = 10,
+                  verbose = FALSE,
                   watchlist = list(val= xgtest,train = xgtrain))
 
 xgpred <- predict(xgmod, xgtest)
@@ -380,12 +398,14 @@ The model has an out-of-sample R^2^ of `r r_squared`. Not terrible.
 ## Predicting Occupancy
 We'll now repeat a similar analysis predicting listing availability over the calendar year.
 ```{r}
-library(xgboost)
-library(glmnet)
-library(mlr)
-library(Ckmeans.1d.dp)
-library(caret)
-library(pROC)
+suppressMessages({
+  library(xgboost)
+  library(glmnet)
+  library(mlr)
+  library(Ckmeans.1d.dp)
+  library(caret)
+  library(pROC)
+})
 
 #select features and target 
 features <- c("price","minimum_nights",
@@ -461,12 +481,16 @@ xgmod <- xgb.train(data = xgtrain,
                   watchlist = list(val= xgtest,train = xgtrain))
 
 truth <- as.numeric(full_df$available[test_idx] == 't')
+
 #roc plot
-roc(truth, predict(xgmod, xgtest),
-    smoothed = FALSE,
-    ci=TRUE, ci.alpha=0.9, 
-    plot=TRUE, auc.polygon=TRUE, max.auc.polygon=TRUE, #grid=TRUE,
-    print.auc=TRUE, show.thres=TRUE)
+invisible(
+  roc(truth, predict(xgmod, xgtest),
+      smoothed = FALSE,
+      ci=TRUE, ci.alpha=0.9, 
+      plot=TRUE, auc.polygon=TRUE, max.auc.polygon=TRUE, #grid=TRUE,
+      print.auc=TRUE, show.thres=TRUE,
+      quiet = TRUE)
+)
 
 #confusion plot
 xgpred <- ifelse (predict(xgmod, xgtest) > 0.5,1,0)
@@ -474,8 +498,11 @@ conf_mat <- confusionMatrix(as.factor(xgpred), as.factor(truth))
 fourfoldplot(conf_mat$table, color = c("#CC6666", "#99CC99"),
              conf.level = 0, margin = 1, main = "Confusion Matrix")
 
+#importance plot
 importance <- xgb.importance(feature_names = colnames(xgtrain), model = xgmod)
 xgb.ggplot.importance(importance_matrix = importance)
+
+#dependence plots
 xgb.plot.shap(data = makeX(full_df[test_idx, features], sparse = TRUE), 
               model = xgmod, 
               top_n = 12, 

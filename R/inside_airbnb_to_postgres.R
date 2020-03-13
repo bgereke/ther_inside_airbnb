@@ -1,6 +1,8 @@
-suppressMessages(library(RCurl, quietly = TRUE, warn.conflicts = FALSE))
-suppressMessages(library(DBI, quietly = TRUE, warn.conflicts = FALSE))
-suppressMessages(library(tidyverse, quietly = TRUE, warn.conflicts = FALSE))
+suppressMessages({
+  library(RCurl, quietly = TRUE, warn.conflicts = FALSE)
+  library(DBI, quietly = TRUE, warn.conflicts = FALSE)
+  library(tidyverse, quietly = TRUE, warn.conflicts = FALSE)
+})
 # library(data.table)
 
 #' Scrape the data URLs from insideairbnb.com

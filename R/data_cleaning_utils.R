@@ -119,7 +119,7 @@ factorize_city <- function(df, city_names, state_names, col_to_keep = city_keep,
     df$host_location <- as.factor(df$host_location)
   }
   df[, col_to_keep] <- as.factor(df[, col_to_keep])
-  df <- df %>% select(-c(cols_to_drop))
+  df <- df %>% select(-cols_to_drop)
   return(df)
 }
 
